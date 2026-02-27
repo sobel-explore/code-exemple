@@ -3,82 +3,100 @@
 ```json
 package com.mock.sftp;
 
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.github.tomakehurst.wiremock.common.FileSource;
+import com.github.tomakehurst.wiremock.extension.Parameters;
+import com.github.tomakehurst.wiremock.extension.ResponseTransformer;
+import com.github.tomakehurst.wiremock.http.Request;
+import com.github.tomakehurst.wiremock.http.Response;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Store clé-valeur en mémoire, persisté en JSON sur disque.
- * Clé : "{codeOrg}/{fileName}"
- * Valeur : Map de propriétés (content, status, sentAt, etc.)
+ * Transformer pour POST /api/sftp/send/{codeOrg}/{fileName}
+ * Body attendu : {"content": "..."}
  *
- * Fichier configurable via -Dwiremock.state.file (défaut : ./sftp-state.json)
+ * Stocke dans FileStateStore et retourne un JSON de confirmation.
  */
-public class FileStateStore {
+public class SftpSendTransformer extends ResponseTransformer {
 
-    private static final FileStateStore INSTANCE = new FileStateStore();
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final ConcurrentHashMap<String, Map<String, String>> store = new ConcurrentHashMap<>();
-    private final Path filePath;
-    private final ObjectMapper mapper;
-
-    private FileStateStore() {
-        this.filePath = Paths.get(System.getProperty("wiremock.state.file", "sftp-state.json"));
-        this.mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
-        load();
+    @Override
+    public String getName() {
+        return "sftp-send-transformer";
     }
 
-    public static FileStateStore getInstance() {
-        return INSTANCE;
+    @Override
+    public boolean applyGlobally() {
+        return false; // activé uniquement sur les mappings qui le déclarent
     }
 
-    /** Stocke un enregistrement et flush sur disque. */
-    public void put(String key, Map<String, String> value) {
-        store.put(key, value);
-        flush();
-    }
-
-    /** Récupère un enregistrement, null si absent. */
-    public Map<String, String> get(String key) {
-        return store.get(key);
-    }
-
-    public boolean exists(String key) {
-        return store.containsKey(key);
-    }
-
-    /** Charge le fichier JSON au démarrage. */
-    private void load() {
-        if (Files.exists(filePath)) {
-            try {
-                var data = mapper.readValue(filePath.toFile(),
-                        new TypeReference<ConcurrentHashMap<String, Map<String, String>>>() {});
-                store.putAll(data);
-                System.out.println("[SftpStateStore] Loaded " + store.size() + " entries from " + filePath);
-            } catch (IOException e) {
-                System.err.println("[SftpStateStore] Failed to load state: " + e.getMessage());
-            }
-        }
-    }
-
-    /** Écrit tout le store sur disque (synchronisé pour éviter les écritures concurrentes). */
-    private synchronized void flush() {
+    @Override
+    public Response transform(Request request, Response response, FileSource files, Parameters parameters) {
         try {
-            mapper.writeValue(filePath.toFile(), store);
-        } catch (IOException e) {
-            System.err.println("[SftpStateStore] Failed to persist state: " + e.getMessage());
+            // Parse URL : /api/sftp/send/{codeOrg}/{fileName}
+            String[] segments = request.getUrl().split("/");
+            // segments: ["", "api", "sftp", "send", "{codeOrg}", "{fileName}"]
+            if (segments.length < 6) {
+                return errorResponse(response, 400, "URL invalide, attendu: /api/sftp/send/{codeOrg}/{fileName}");
+            }
+
+            String codeOrg = segments[4];
+            String fileName = segments[5];
+            String key = codeOrg + "/" + fileName;
+
+            // Parse body
+            String content = "";
+            String body = request.getBodyAsString();
+            if (body != null && !body.isBlank()) {
+                JsonNode node = MAPPER.readTree(body);
+                if (node.has("content")) {
+                    content = node.get("content").asText();
+                }
+            }
+
+            // Stocke
+            Map<String, String> state = new HashMap<>();
+            state.put("codeOrg", codeOrg);
+            state.put("fileName", fileName);
+            state.put("content", content);
+            state.put("status", "DELIVERED");
+            state.put("sentAt", Instant.now().toString());
+
+            FileStateStore.getInstance().put(key, state);
+
+            // Réponse
+            String json = MAPPER.writeValueAsString(Map.of(
+                    "status", "ACCEPTED",
+                    "codeOrg", codeOrg,
+                    "fileName", fileName
+            ));
+
+            return Response.Builder.like(response)
+                    .but()
+                    .status(200)
+                    .header("Content-Type", "application/json")
+                    .body(json)
+                    .build();
+
+        } catch (Exception e) {
+            return errorResponse(response, 500, "Erreur interne: " + e.getMessage());
         }
+    }
+
+    private Response errorResponse(Response response, int status, String message) {
+        return Response.Builder.like(response)
+                .but()
+                .status(status)
+                .header("Content-Type", "application/json")
+                .body("{\"error\": \"" + message + "\"}")
+                .build();
     }
 }
-
-
 
 
 
