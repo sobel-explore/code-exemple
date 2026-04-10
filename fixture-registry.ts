@@ -1,11 +1,11 @@
+export interface FixtureConfig {
+  body: unknown;
+  status?: number;  // ← optionnel, 200 par défaut
+}
 
-// src/testing/interceptors/fixture-registry.ts
-import USERS from '../fixtures/users.json';
-import PRODUCTS from '../fixtures/products.json';
-import { ORDERS_FIXTURE } from '../fixtures/orders.fixture'; // TypeScript
-
-export const FIXTURE_REGISTRY: Record<string, unknown> = {
-  '/api/users':    USERS,
-  '/api/products': PRODUCTS,
-  '/api/orders':   ORDERS_FIXTURE,
+export const FIXTURE_REGISTRY: Record<string, FixtureConfig> = {
+  '/api/users':    { body: USERS },
+  '/api/orders':   { body: ORDERS, status: 200 },
+  '/api/products': { body: null,   status: 404 },  // ← erreur simulée
+  '/api/login':    { body: null,   status: 401 },
 };
