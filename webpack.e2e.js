@@ -5,7 +5,7 @@ module.exports = {
     rules: [
       {
         test: /\.(ts)$/,
-        include: /src\/app/,
+          include: path.resolve(__dirname, 'src/app'), 
         exclude: /\.spec\.ts$/,
         enforce: 'post',
         use: {
